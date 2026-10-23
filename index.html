@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Clock</title>
+<style>
+  :root { --bg:#000; --card:#1b1b1d; --text:#f2f2f2; --dim:#8e8e93; --accent:#8ab4f8; --danger:#f28b82; }
+  * { box-sizing:border-box; }
+  html,body { margin:0; background:var(--bg); color:var(--text); font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; }
+  main { max-width:560px; margin:0 auto; padding:16px 16px 120px; }
+  .tabs { display:flex; position:sticky; top:0; background:var(--bg); padding-top:8px; z-index:2; }
+  .tabs button { flex:1; background:none; border:0; border-bottom:2px solid #2a2a2c; color:var(--dim); font-size:16px; padding:14px 0; cursor:pointer; }
+  .tabs button[aria-selected="true"] { color:var(--accent); border-color:var(--accent); }
+  #list { display:grid; gap:12px; margin-top:16px; }
+  .empty { color:var(--dim); text-align:center; margin-top:64px; }
+  .card { background:var(--card); border-radius:20px; padding:16px 18px; }
+  .card.done { outline:2px solid var(--danger); animation:blink 1s steps(2) infinite; }
+  @keyframes blink { 50% { outline-color:transparent; } }
+  .top { display:flex; align-items:center; gap:8px; }
+  .label { flex:1; min-width:0; background:none; border:0; border-bottom:1px solid transparent; color:var(--dim); font-size:15px; padding:4px 0; font-family:inherit; }
+  .label:focus { outline:none; border-color:var(--accent); color:var(--text); }
+  .time { font-size:54px; font-weight:300; font-variant-numeric:tabular-nums; letter-spacing:-1px; margin:6px 0 10px; }
+  .time small { font-size:26px; color:var(--dim); }
+  .set { display:flex; align-items:baseline; gap:6px; margin:6px 0 10px; }
+  .set input { width:84px; background:none; border:0; border-bottom:1px solid #3a3a3c; color:var(--text); font-size:44px; font-weight:300; text-align:center; font-family:inherit; font-variant-numeric:tabular-nums; padding:0; }
+  .set input:focus { outline:none; border-color:var(--accent); }
+  .set span { color:var(--dim); font-size:15px; margin-right:8px; }
+  .row { display:flex; gap:10px; }
+  .btn { border:0; border-radius:999px; padding:12px 24px; font-size:15px; font-weight:500; cursor:pointer; background:#2c2c2e; color:var(--text); }
+  .btn.main { background:var(--accent); color:#0b1b33; flex:1; }
+  .btn:focus-visible, .tabs button:focus-visible, .fab:focus-visible { outline:2px solid #fff; outline-offset:2px; }
+  .x { background:none; border:0; color:var(--dim); font-size:22px; cursor:pointer; padding:4px 8px; line-height:1; }
+  .x:hover { color:var(--danger); }
+  .fab { position:fixed; right:max(20px, calc(50% - 260px)); bottom:24px; width:60px; height:60px; border-radius:20px; border:0; background:var(--accent); color:#0b1b33; font-size:32px; cursor:pointer; }
+  @media (prefers-reduced-motion:reduce) { .card.done { animation:none; } }
+</style>
+</head>
+<body>
+<main>
+  <div class="tabs" role="tablist">
+    <button role="tab" id="t-stopwatch" aria-selected="true">Stopwatch</button>
+    <button role="tab" id="t-timer" aria-selected="false">Timer</button>
+  </div>
+  <div id="list"></div>
+</main>
+<button class="fab" id="add" aria-label="Add">+</button>
+
+<script>
+let items = [], tab = 'stopwatch', audio;
+try { const s = JSON.parse(localStorage.getItem('clock-v1')); if (s) { items = s.items || []; tab = s.tab || tab; } } catch (e) {}
+
+const save = () => { try { localStorage.setItem('clock-v1', JSON.stringify({ items, tab })); } catch (e) {} };
+const $ = id => document.getElementById(id);
+const elapsed = it => it.acc + (it.since ? Date.now() - it.since : 0);
+const remaining = it => Math.max(0, it.duration - elapsed(it));
+const idle = it => !it.since && it.acc === 0;
+
+function fmt(ms, hund) {
+  const t = Math.floor(ms / 10), cs = t % 100, s = Math.floor(t / 100) % 60,
+        m = Math.floor(t / 6000) % 60, h = Math.floor(t / 360000), p = n => String(n).padStart(2, '0');
+  return (h ? h + ':' : '') + p(m) + ':' + p(s) + (hund ? '<small>.' + p(cs) + '</small>' : '');
+}
+
+function beep() {
+  try {
+    audio = audio || new (window.AudioContext || window.webkitAudioContext)();
+    [0, .25, .5].forEach(d => {
+      const o = audio.createOscillator(), g = audio.createGain();
+      o.frequency.value = 880; o.connect(g); g.connect(audio.destination);
+      const t = audio.currentTime + d; g.gain.setValueAtTime(.2, t); g.gain.exponentialRampToValueAtTime(.001, t + .2);
+      o.start(t); o.stop(t + .2);
+    });
+  } catch (e) {}
+}
+
+function render() {
+  document.querySelectorAll('.tabs button').forEach(b => b.setAttribute('aria-selected', b.id === 't-' + tab));
+  const mine = items.filter(i => i.type === tab);
+  const list = $('list');
+  list.innerHTML = '';
+  if (!mine.length) { list.innerHTML = '<p class="empty">Nothing here yet. Tap + to add a ' + tab + '.</p>'; return; }
+  mine.forEach(it => {
+    const c = document.createElement('div');
+    c.className = 'card'; c.id = 'c' + it.id;
+    const isT = it.type === 'timer';
+    const setup = isT && idle(it);
+    const d = it.duration, H = Math.floor(d / 3600000), M = Math.floor(d / 60000) % 60, S = Math.floor(d / 1000) % 60;
+    c.innerHTML =
+      '<div class="top"><input class="label" placeholder="Label" aria-label="Label" maxlength="40" value="' + (it.label || '').replace(/"/g, '&quot;') + '">' +
+      '<button class="x" aria-label="Delete">×</button></div>' +
+      (setup
+        ? '<div class="set"><input type="number" min="0" max="99" data-u="h" value="' + H + '" aria-label="Hours"><span>h</span>' +
+          '<input type="number" min="0" max="59" data-u="m" value="' + M + '" aria-label="Minutes"><span>m</span>' +
+          '<input type="number" min="0" max="59" data-u="s" value="' + S + '" aria-label="Seconds"><span>s</span></div>'
+        : '<div class="time"></div>') +
+      '<div class="row"><button class="btn main go"></button>' +
+      (setup ? '' : '<button class="btn rst">Reset</button>') + '</div>';
+    list.appendChild(c);
+
+    c.querySelector('.label').oninput = e => { it.label = e.target.value; save(); };
+    c.querySelector('.x').onclick = () => { items = items.filter(i => i !== it); save(); render(); };
+    c.querySelector('.go').onclick = () => {
+      if (isT && idle(it) && it.duration <= 0) return;
+      if (isT && !audio) { try { audio = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) {} }
+      if (it.since) { it.acc = elapsed(it); it.since = 0; } else { it.since = Date.now(); }
+      save(); render();
+    };
+    const r = c.querySelector('.rst');
+    if (r) r.onclick = () => { it.acc = 0; it.since = 0; it.done = false; save(); render(); };
+    c.querySelectorAll('.set input').forEach(inp => inp.oninput = () => {
+      const v = n => Math.max(0, Math.min(+n || 0, 99));
+      const [h, m, s] = ['h', 'm', 's'].map(u => v(c.querySelector('[data-u=' + u + ']').value));
+      it.duration = ((h * 60 + m) * 60 + s) * 1000; save();
+    });
+  });
+  tick();
+}
+
+function tick() {
+  items.filter(i => i.type === tab).forEach(it => {
+    const c = $('c' + it.id); if (!c) return;
+    const isT = it.type === 'timer';
+    if (isT && it.since && remaining(it) === 0 && !it.done) {
+      it.acc = it.duration; it.since = 0; it.done = true; save(); beep();
+    }
+    const go = c.querySelector('.go'), t = c.querySelector('.time');
+    c.classList.toggle('done', !!it.done);
+    if (t) t.innerHTML = isT ? fmt(remaining(it) + (it.since ? 999 : 0), false) : fmt(elapsed(it), true);
+    if (go) go.textContent = it.done ? 'Done' : it.since ? 'Pause' : (idle(it) ? 'Start' : 'Resume');
+    if (go) go.disabled = !!it.done;
+  });
+}
+
+// Timers that finished while the tab was closed or in the background
+items.forEach(it => { if (it.type === 'timer' && it.since && remaining(it) === 0) { it.acc = it.duration; it.since = 0; it.done = true; } });
+
+document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => { tab = b.id.slice(2); save(); render(); });
+$('add').onclick = () => {
+  items.push({ id: Date.now() + Math.random().toString(36).slice(2, 5), type: tab, label: '', acc: 0, since: 0, duration: tab === 'timer' ? 300000 : 0 });
+  save(); render();
+};
+
+render();
+setInterval(tick, 50);
+</script>
+</body>
+</html>
